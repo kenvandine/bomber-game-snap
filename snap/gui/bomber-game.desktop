@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Bomberrage
+GenericName=Arcade Game
+Comment=Open-source 3D arcade multiplayer game built on Unreal Engine 5
+Exec=bomber-game %U
+Icon=${SNAP}/meta/gui/bomber-game.png
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=bomber;bomberman;arcade;multiplayer;unreal;
+StartupWMClass=Bomber-Linux-Shipping

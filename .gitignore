@@ -1,0 +1,5 @@
+dist/
+parts/
+stage/
+prime/
+*.snap

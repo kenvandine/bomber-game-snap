@@ -1,0 +1,72 @@
+name: bomber-game
+title: Bomberrage
+base: core24
+adopt-info: game-payload
+summary: Open-source 3D arcade multiplayer game built on Unreal Engine 5
+description: |
+  Bomber (Bomberrage) is an open-source 3D multiplayer action game built on
+  Unreal Engine 5. Features local/online multiplayer, AI bots, full gamepad
+  support, and dynamic destructible arenas.
+
+  Upstream project: https://github.com/JanSeliv/Bomber
+license: MIT
+website: https://github.com/JanSeliv/Bomber
+source-code: https://github.com/kenvandine/bomber-game-snap
+issues: https://github.com/kenvandine/bomber-game-snap/issues
+grade: stable
+confinement: strict
+
+# Unreal only ships x86_64 Linux client builds for this project.
+platforms:
+  amd64:
+
+apps:
+  bomber-game:
+    command: bin/launcher
+    # The core24 gnome extension wires in the desktop runtime and the
+    # gpu-2404 (mesa-2404) graphics stack, including the Vulkan ICDs.
+    extensions: [gnome]
+    plugs:
+      - opengl
+      - audio-playback
+      - joystick
+      - network
+      - network-bind
+
+parts:
+  launcher:
+    plugin: dump
+    source: snap/local/
+    organize:
+      # launcher.sh is committed with its executable bit set; dump keeps it.
+      launcher.sh: bin/launcher
+
+  # Output of tools/build-linux-shipping.sh (UAT BuildCookRun -archive).
+  # It is far too large to build inside the snapcraft build environment,
+  # so it is produced beforehand and dumped as-is.
+  game-payload:
+    plugin: dump
+    source: dist/LinuxShipping/Linux/
+    organize:
+      '*': opt/bomber/
+    stage-packages:
+      # UE5's RHI dlopens the Vulkan loader; the drivers themselves come
+      # from gpu-2404 via the gnome extension.
+      - libvulkan1
+      - libpulse0
+      - libasound2t64
+    override-pull: |
+      craftctl default
+      if [ ! -x Bomber/Binaries/Linux/Bomber-Linux-Shipping ]; then
+        echo "dist/LinuxShipping/Linux is missing the Bomber shipping build." >&2
+        echo "Run tools/build-linux-shipping.sh first." >&2
+        exit 1
+      fi
+      if [ -f VERSION ]; then
+        craftctl set version="$(cat VERSION)"
+      else
+        craftctl set version="0+unknown"
+      fi
+    stage:
+      # The VERSION stamp is build metadata, not part of the game.
+      - -opt/bomber/VERSION
