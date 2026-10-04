@@ -37,6 +37,26 @@ checkout before step 1 if you want it in the snap.
 
 The snap version comes from the Bomber commit that was built, for example `2026.06.23+git0894f21`.
 
+## CI
+
+`.github/workflows/snap.yml` packs the snap on every push and pull request, using a stub game
+binary in place of the cooked build, so `snapcraft.yaml`, the launcher and the staged libraries
+are checked without a UE5 build.
+
+To build the real snap, run the **Snap** workflow by hand (Actions → Snap → Run workflow). It
+gets the cooked game in one of two ways:
+
+- **`payload_url`**: a tarball of `dist/LinuxShipping` with `Linux/` at the top, for example
+  `tar -C dist/LinuxShipping -czf bomber-linux-shipping.tar.gz Linux` after step 1 above.
+- **A self-hosted runner** labelled `ue5` (leave `payload_url` empty). It runs
+  `tools/build-linux-shipping.sh` with `UE_ROOT` taken from the repository variable `UE_ROOT`
+  (default `~/UnrealEngine`); `bomber_ref` picks the Bomber commit.
+
+The snap is uploaded as the `bomber-game-snap` artifact. Tick **publish** to release it to the
+chosen store channel (default `edge`). Publishing runs in the `snap-store` environment and needs
+the `SNAPCRAFT_STORE_CREDENTIALS` secret (`snapcraft export-login --snaps=bomber-game
+--acls=package_access,package_push,package_update,package_release -`).
+
 ## Confinement notes
 
 - **Graphics:** the `gnome` extension on core24 supplies Mesa and the Vulkan ICDs through

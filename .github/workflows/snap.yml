@@ -1,0 +1,158 @@
+name: Snap
+
+# Pushes and pull requests pack the snap around a stub game payload. That
+# checks snapcraft.yaml, the launcher and the staged libraries without the
+# ~100 GB Unreal Engine build.
+#
+# A real snap is built from a manual run (Actions > Snap > Run workflow),
+# which takes the cooked game from one of:
+#   - payload_url: a tarball of dist/LinuxShipping (top-level Linux/ dir),
+#     as written by tools/build-linux-shipping.sh, or
+#   - a self-hosted runner labelled `ue5` with a UE 5.7 source build at
+#     $UE_ROOT (repository variable UE_ROOT, default ~/UnrealEngine), which
+#     cooks it with tools/build-linux-shipping.sh.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      payload_url:
+        description: URL of a dist/LinuxShipping tarball (leave empty to cook on the ue5 runner)
+        default: ''
+      bomber_ref:
+        description: Bomber branch, tag or commit to cook (ue5 runner only; empty = current checkout)
+        default: ''
+      publish:
+        description: Upload the snap to the Snap Store
+        type: boolean
+        default: false
+      channel:
+        description: Store channel to release to
+        default: edge
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  cook:
+    if: github.event_name == 'workflow_dispatch' && inputs.payload_url == ''
+    runs-on: [self-hosted, linux, x64, ue5]
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cook and archive the Linux shipping build
+        env:
+          UE_ROOT: ${{ vars.UE_ROOT }}
+          BOMBER_REF: ${{ inputs.bomber_ref }}
+        run: tools/build-linux-shipping.sh
+
+      # upload-artifact drops Unix permissions, so the build travels as a
+      # tarball to keep the game binaries executable.
+      - name: Pack payload
+        run: tar -C dist/LinuxShipping -czf bomber-linux-shipping.tar.gz Linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bomber-linux-shipping
+          path: bomber-linux-shipping.tar.gz
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  snap:
+    needs: cook
+    if: >-
+      !cancelled() &&
+      (needs.cook.result == 'success' || needs.cook.result == 'skipped')
+    runs-on: ubuntu-24.04
+    outputs:
+      snap: ${{ steps.build.outputs.snap }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Fetch cooked payload from the ue5 runner
+        if: needs.cook.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: bomber-linux-shipping
+
+      - name: Unpack payload
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PAYLOAD_URL: ${{ inputs.payload_url }}
+        run: |
+          if [ -n "$PAYLOAD_URL" ]; then
+            curl -fL --retry 3 -o bomber-linux-shipping.tar.gz "$PAYLOAD_URL"
+          fi
+          mkdir -p dist/LinuxShipping
+          tar -C dist/LinuxShipping -xf bomber-linux-shipping.tar.gz
+          rm bomber-linux-shipping.tar.gz
+          echo "Packaging Bomber $(cat dist/LinuxShipping/Linux/VERSION 2>/dev/null || echo '(no VERSION)')"
+
+      - name: Create stub payload
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          bin=dist/LinuxShipping/Linux/Bomber/Binaries/Linux
+          mkdir -p "$bin"
+          printf '#!/bin/sh\necho "stub Bomber build"\n' > "$bin/Bomber-Linux-Shipping"
+          chmod +x "$bin/Bomber-Linux-Shipping"
+          echo "0+ci.$(git rev-parse --short HEAD)" > dist/LinuxShipping/Linux/VERSION
+
+      - name: Build snap
+        id: build
+        uses: snapcore/action-build@v1
+
+      - name: Check snap contents
+        run: |
+          unsquashfs -l "${{ steps.build.outputs.snap }}" > contents.txt
+          grep -qx 'squashfs-root/bin/launcher' contents.txt
+          grep -qx 'squashfs-root/opt/bomber/Bomber/Binaries/Linux/Bomber-Linux-Shipping' contents.txt
+          grep -q 'libvulkan.so.1' contents.txt
+          if grep -qx 'squashfs-root/opt/bomber/VERSION' contents.txt; then
+            echo "VERSION stamp leaked into the snap" >&2
+            exit 1
+          fi
+
+      - name: Install the snap
+        run: |
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          snap list bomber-game
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: bomber-game-snap
+          path: ${{ steps.build.outputs.snap }}
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: snap
+    if: >-
+      !cancelled() && needs.snap.result == 'success' &&
+      github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-24.04
+    environment: snap-store
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bomber-game-snap
+
+      - name: Publish to the Snap Store
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ needs.snap.outputs.snap }}
+          release: ${{ inputs.channel }}
